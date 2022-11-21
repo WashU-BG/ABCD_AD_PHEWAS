@@ -1,0 +1,427 @@
+---
+title: "PheWAS Analyses"
+author: "AG, SP, AH"
+output:
+  pdf_document: default
+  pdf: default
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+
+## Libraries, functions
+```{r}
+#install packages if ncessary 
+library(data.table)
+library(lmerTest)
+library(lme4)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(ggrepel)
+library(forcats)
+library(ggsci)
+library(RColorBrewer)
+library(optimx)
+library(minqa)
+library(dfoptim)
+library(survey)
+library(lavaan.survey)
+library(Polychrome)
+library(scales)
+library(ggnewscale)
+library(ggpubr)
+library(gplots)
+library(psych)
+#Functions that help
+#Nabs warnings from a loop
+withWarnings <- function(expr) {
+  myWarnings <- NULL
+  wHandler <- function(w) {
+    myWarnings <<- c(myWarnings, list(w))
+    invokeRestart("muffleWarning")
+  }
+  val <- withCallingHandlers(expr, warning = wHandler)
+  list(value = val, warnings = myWarnings)
+} 
+set.seed(42)
+```
+
+## Reading in Baseline Data
+```{r}
+#load data
+PheWAS_baseline <- read_excel('~/data') 
+#organize data  working with only non imaging phenotypes first 
+data$site_id <- ifelse(data$site_id == 22, 21, data$site_id)
+data[data == "NA"] <- NA
+data[data == ""] <- NA
+#Have to change here to the column names for the ordered categorical variables, this code changes to factor
+PheWAS_baseline[,c(1:4,20,671:1288)] <- lapply(PheWAS_baseline[,c(1:4,20,671:1288)],as.factor)
+PheWAS_baseline[,c(5:19,21:670)] <- lapply(PheWAS_baseline[,c(5:19,21:670)],as.numeric)
+
+#Scale the numeric variables
+PheWAS_baseline <- PheWAS_baseline %>%
+  mutate_if(is.numeric, scale)
+
+PheWAS_baseline <- as.data.frame(PheWAS_baseline)
+
+#Eur <- fread("EU_PCs_ABCD3.txt", header=T, data.table=F)
+psych::describe(PheWAS_baseline[,1100:1105])
+
+## moving continuous items with issues to the end of the continuous section add right before highlight- 
+PheWAS_baseline <- PheWAS_baseline %>%
+  relocate(reshist_state_immigrant_factor, .after = "birth_weight_oz_comb") %>%
+  relocate(pds_f4_p, .after = "reshist_state_immigrant_factor") %>%
+  relocate(pds_f4_2_y, .after = "pds_f4_p") %>%
+  relocate(pds_m4_y, .after = "pds_f4_2_y") %>%
+  relocate(pds_m5_y, .after = "pds_m4_y") %>%
+   relocate(pds_m5_p, .after = "pds_m5_y") %>% 
+  relocate(pds_m4_p, .after = "pds_m5_p") %>% 
+  relocate(pds_p_ss_female_category_2, .after = "pds_m4_p") %>%
+  relocate(pds_p_ss_male_category_2, .after = "pds_p_ss_female_category_2") %>%
+  relocate(pds_y_ss_female_category_2, .after = "pds_p_ss_male_category_2") %>%
+  relocate(pds_y_ss_male_cat_2, .after = "pds_y_ss_female_category_2") %>%
+  relocate(medhx_6m_times, .after = "pds_y_ss_male_cat_2") %>%
+  relocate(medhx_6n_notes, .after = "medhx_6m_times") %>%
+  relocate(medhx_6p_notes, .after = "medhx_6n_notes")  
+
+
+attach(data)
+```
+
+
+```{r}
+# CONTINUOUS VARIALBES AS OUTCOME
+First <- 21 
+Last <- 656
+#creates objects for the loop
+Beta <- NULL
+STE <- NULL
+Area <- NULL
+Pval <- NULL
+i <-  NULL
+Warn <- NULL
+Results <- NULL
+Sigs <- NULL
+LMEOut <- NULL
+a <- NULL
+#Runs the for loop
+for (i in First:Last) {
+  print(i)
+  #******CHANGE*******add your covariates, build your LMER ADD SEX VARIABLE and do for each interview age to equation (11/17/22)- Further, [genetics score] is where you add your genetic indices 
+  LMEOut <- withWarnings( a <- lmer(data[,i] ~ [genetics score] + C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + (1|site_id) + (1|rel_family_id), control = lmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e5))))
+  Beta[i] <- summary(a)$`coefficients`[2]
+  STE[i] <- summary(a)$`coefficients`[2,2]
+  Pval[i] <-  summary(a)$`coefficients`[2,5]
+  Area[i] <- colnames(PheWAS_baseline)[i]
+  Warn[i] <- LMEOut$warnings
+}
+detach(PheWAS_baseline)
+#Store results in a dataframe
+Results <- cbind.data.frame(Area[First:length(Area)], Beta[First:length(Beta)], STE[First:length(STE)], Pval[First:length(Pval)])
+#Relabel Results
+colnames(Results) <- c("Variable", "Beta", "STE", "Pval")
+
+# reshist, pds, medhx variables - running these separately from the for loop, as they required me to take out some covariates - e.g., the puberty questions were for particular sexes, so taking out sex as a covariate
+#example:
+reshist_state_immigrant_factor_mod1 <- lmer(reshist_state_immigrant_factor ~ [genetics score] +  C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + (1|site_id), control = lmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e5)), data =  data)
+
+## merging the results from the above models 
+Variable <- colnames(PheWAS_baseline[657:670])
+Beta <- c(coef(summary(reshist_state_immigrant_factor_mod1))[2,1], coef(summary(pds_f4_p_mod1))[2,1], coef(summary(pds_m5_y_mod1))[2,1], coef(summary(pds_f4_2_y_mod1))[2,1], coef(summary(pds_m4_y_mod1))[2,1], coef(summary(pds_m5_p_mod1))[2,1],coef(summary(pds_m4_p_mod1))[2,1],
+          coef(summary(pds_p_ss_female_category_2_mod1))[2,1], coef(summary(pds_p_ss_male_category_2_mod1))[2,1], coef(summary(pds_y_ss_female_category_2_mod1))[2,1], coef(summary(pds_y_ss_male_cat_2_mod1))[2,1], coef(summary(medhx_6m_times_mod1))[2,1], coef(summary(medhx_6n_notes_mod1))[2,1], coef(summary(medhx_6p_notes_mod1))[2,1])
+coef(summary(reshist_state_immigrant_factor_mod1))[2,2]
+coef(summary(reshist_state_immigrant_factor_mod1))[2,5]
+STE <- c(coef(summary(reshist_state_immigrant_factor_mod1))[2,2], coef(summary(pds_f4_p_mod1))[2,2], coef(summary(pds_f4_2_y_mod1))[2,2], coef(summary(pds_m4_y_mod1))[2,2], coef(summary(pds_m5_y_mod1))[2,2], coef(summary(pds_m5_p_mod1))[2,2], coef(summary(pds_m4_p_mod1))[2,2], coef(summary(pds_p_ss_female_category_2_mod1))[2,2], coef(summary(pds_p_ss_male_category_2_mod1))[2,2], coef(summary(pds_y_ss_female_category_2_mod1))[2,2], coef(summary(pds_y_ss_male_cat_2_mod1))[2,2], coef(summary(medhx_6m_times_mod1))[2,2], coef(summary(medhx_6n_notes_mod1))[2,2], coef(summary(medhx_6p_notes_mod1))[2,2])
+Pval <- c(coef(summary(reshist_state_immigrant_factor_mod1))[2,5], coef(summary(pds_f4_p_mod1))[2,5], coef(summary(pds_f4_2_y_mod1))[2,5], coef(summary(pds_m4_y_mod1))[2,5], coef(summary(pds_m5_y_mod1))[2,5],coef(summary(pds_m5_p_mod1))[2,5], coef(summary(pds_m4_p_mod1))[2,5], coef(summary(pds_p_ss_female_category_2_mod1))[2,5], coef(summary(pds_p_ss_male_category_2_mod1))[2,5], coef(summary(pds_y_ss_female_category_2_mod1))[2,5], coef(summary(pds_y_ss_male_cat_2_mod1))[2,5], coef(summary(medhx_6m_times_mod1))[2,5], coef(summary(medhx_6n_notes_mod1))[2,5], coef(summary(medhx_6p_notes_mod1))[2,5])
+Resultsb <- cbind(Variable, Beta, STE, Pval)
+
+# merging with the other results
+Results_cont <- rbind(Results, Resultsb)
+
+## CATEGORICAL VARABIALES AS OUTCOME (calling for categorical variables)
+First <- 671
+Last <- 1289
+Beta <- NULL
+STE <- NULL
+Area <- NULL
+Pval <- NULL
+i <-  NULL
+Warn <- NULL
+Results <- NULL
+Sigs <- NULL
+LMEOut <- NULL
+a <- NULL
+for (i in First:Last) {
+  print(i)
+  LMEOut <- withWarnings( a <- glmer(data[,i] ~ [genetics score] +  C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + (1|site_id) + (1|rel_family_id), family = "binomial", nAGQ = 0, control = glmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e5))))
+  Beta[i] <- summary(a)$`coefficients`[2]
+  STE[i] <- summary(a)$`coefficients`[2,2]
+  Pval[i] <-  summary(a)$`coefficients`[2,4]
+  Area[i] <- colnames(PheWAS_baseline)[i]
+  Warn[i] <- LMEOut$warnings
+}
+#Store results in a dataframe
+Results_cat <- cbind.data.frame(Area[First:length(Area)], Beta[First:length(Beta)], STE[First:length(STE)], Pval[First:length(Pval)])
+#Relabel Results
+colnames(Results_cat) <- c("Variable", "Beta", "STE", "Pval")
+
+# merge
+Results <- rbind(Results_cont, Results_cat)
+# 2 tiers of FDR correction
+Results$FDR <- p.adjust(Results$Pval, method="fdr")
+Results$Bonferroni <- p.adjust(Results$Pval, method = "bonferroni")
+Results$FDR <- p.adjust(Results$Pval, method= "fdr")
+min(Results$FDR)
+#Write out results
+fwrite(Results, "results.csv")
+
+# repat theis for all 4 genetic indices (keep in mind that the moderation indice will require additoinal steps): For example using the minus_score as the genetic indice:
+#medhx_6n_notes_mod1 <- lmer(as.numeric(as.character(medhx_6n_notes)) ~ Minus_Score +  APOE_s + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + interview_age + Minus_Score*APOE_s + Minus_Score*PC1 + Minus_Score*PC2 + Minus_Score*PC3 + Minus_Score*PC4 + Minus_Score*PC5 + Minus_Score*PC6 + Minus_Score*PC7 + Minus_Score*PC8 + Minus_Score*PC9 + Minus_Score*PC10  + Minus_Score*interview_age + APOE_s*PC1 + APOE_s*PC2 + APOE_s*PC3 + APOE_s*PC4 + APOE_s*PC5 + APOE_s*PC6 + APOE_s*PC7 + APOE_s*PC8 + APOE_s*PC9 + APOE_s*PC10 + APOE_s*interview_age + (1|site_id) + (1|family_id), control = lmerControl(optimizer = "bobyqa", optCtrl=list(maxfun=1e5)))
+```
+
+
+
+## BRAIN ANALYSES - SUMMARIES ## (we looked at global metrics first)
+```{r}
+MRI_sum_baseline <- read_excel()
+MRI_regional <- read_excel() 
+
+other_global <- MRI_regional[, c("smri_vol_scs_wholeb", "smri_vol_scs_suprateialv", "smri_vol_scs_cbwmatterlh", "smri_vol_scs_cbwmatterrh", "smri_vol_cdk_totallh", "smri_vol_cdk_totalrh", "smri_thick_cdk_meanlh", "smri_thick_cdk_meanrh", "smri_area_cdk_totallh", "smri_area_cdk_totalrh")]
+
+other <- MRI_regional[, c("smri_vol_scs_3rdventricle", "smri_vol_scs_4thventricle", "smri_vol_scs_bstem", "smri_vol_scs_csf", "smri_vol_scs_ccps", "smri_vol_scs_ccmidps", "smri_vol_scs_ccct", "smri_vol_scs_ccmidat", "smri_vol_scs_ccat", "smri_vol_scs_latventricles", "smri_vol_scs_allventricles")]
+
+MRI_sum_baseline <- cbind(MRI_sum_baseline, other_global, other)
+
+MRI_sum_baseline[,c(1:4,20:21)] <- lapply(MRI_sum_baseline[,c(1:4,20:21)],as.factor)
+MRI_sum_baseline[,c(5:19,22:82)] <- lapply(MRI_sum_baseline[,c(5:19,22:82)],as.numeric)
+MRI_sum_baseline <- MRI_sum_baseline %>%
+  mutate_if(is.numeric, scale)
+MRI_sum_baseline[MRI_sum_baseline == "NA"] <-NA
+
+
+### SMRI
+MRI_sum_baseline_smri <- MRI_sum_baseline[,c(1:21, 37:41, 62:71)]
+MRI_sum_baseline_smri <- as.data.frame(MRI_sum_baseline_smri)
+attach(MRI_sum_baseline_smri)
+
+# global
+First <- 22
+#********CHANGE********Number of the last column you want to run. 
+Last <- 36
+#creates objects for the loop
+Beta <- NULL
+STE <- NULL
+Area <- NULL
+Pval <- NULL
+i <-  NULL
+Warn <- NULL
+Results <- NULL
+Sigs <- NULL
+LMEOut <- NULL
+a <- NULL
+#Runs the for loop
+for (i in First:Last) {
+  #******CHANGE*******add your covariates, build your LMER
+  LMEOut <- withWarnings( a <- lmer(MRI_sum_baseline_smri[,i] ~ Compulsive_PRScs + C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + mri_info_manufacturer_COV + (1|site_id) + (1|rel_family_id)))
+  Beta[i] <- summary(a)$`coefficients`[2]
+  STE[i] <- summary(a)$`coefficients`[2,2]
+  Pval[i] <-  summary(a)$`coefficients`[2,5]
+  Area[i] <- colnames(MRI_sum_baseline_smri)[i]
+  Warn[i] <- LMEOut$warnings
+}
+#Store results in a dataframe
+Results_Comp_SMRI <- cbind.data.frame(Area[First:length(Area)], Beta[First:length(Beta)], STE[First:length(STE)], Pval[First:length(Pval)])
+#Relabel Results
+colnames(Results_Comp_SMRI) <- c("Variable", "Beta", "STE", "Pval")
+Results_Comp_SMRI$FDR1 <- p.adjust(Results_Comp_SMRI$Pval, method = "fdr")
+
+
+
+
+detach(MRI_sum_baseline_smri)
+### RSFMRI
+MRI_sum_baseline_rsfmri <- MRI_sum_baseline[,c(1:22, 24:36)]
+MRI_sum_baseline_rsfmri <- as.data.frame(MRI_sum_baseline_rsfmri)
+attach(MRI_sum_baseline_rsfmri)
+
+First <- 23
+#********CHANGE********Number of the last column you want to run. 
+Last <- 35
+#creates objects for the loop
+Beta <- NULL
+STE <- NULL
+Area <- NULL
+Pval <- NULL
+i <-  NULL
+Warn <- NULL
+Results <- NULL
+Sigs <- NULL
+LMEOut <- NULL
+a <- NULL
+#Runs the for loop
+for (i in First:Last) {
+  #******CHANGE*******add your covariates, build your LMER
+  LMEOut <- withWarnings( a <- lmer(MRI_sum_baseline_rsfmri[,i] ~ Compulsive_PRScs +  C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + mri_info_manufacturer_COV + rsfmri_c_ngd_meanmotion_COV + (1|site_id) + (1|rel_family_id)))
+  Beta[i] <- summary(a)$`coefficients`[2]
+  STE[i] <- summary(a)$`coefficients`[2,2]
+  Pval[i] <-  summary(a)$`coefficients`[2,5]
+  Area[i] <- colnames(MRI_sum_baseline_rsfmri)[i]
+  Warn[i] <- LMEOut$warnings
+}
+#Store results in a dataframe
+Results_Comp_RSFMRI <- cbind.data.frame(Area[First:length(Area)], Beta[First:length(Beta)], STE[First:length(STE)], Pval[First:length(Pval)])
+#Relabel Results
+colnames(Results_Comp_RSFMRI) <- c("Variable", "Beta", "STE", "Pval")
+Results_Comp_RSFMRI$FDR1 <- p.adjust(Results_Comp_RSFMRI$Pval, method = "fdr")
+# 	rsfmri_c_ngd_fo_ngd_fo
+
+
+
+detach(MRI_sum_baseline_rsfmri)
+### DMRI
+MRI_sum_baseline_dmri <- MRI_sum_baseline[,c(1:21, 23, 42:61)]
+MRI_sum_baseline_dmri <- as.data.frame(MRI_sum_baseline_dmri)
+attach(MRI_sum_baseline_dmri)
+
+First <- 23
+#********CHANGE********Number of the last column you want to run. 
+Last <- 42
+#creates objects for the loop
+Beta <- NULL
+STE <- NULL
+Area <- NULL
+Pval <- NULL
+i <-  NULL
+Warn <- NULL
+Results <- NULL
+Sigs <- NULL
+LMEOut <- NULL
+a <- NULL
+#Runs the for loop
+for (i in First:Last) {
+  #******CHANGE*******add your covariates, build your LMER
+  LMEOut <- withWarnings( a <- lmer(MRI_sum_baseline_dmri[,i] ~ Compulsive_PRScs +  C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + mri_info_manufacturer_COV + dmri_dti_meanmotion_COV + (1|site_id) + (1|rel_family_id)))
+  Beta[i] <- summary(a)$`coefficients`[2]
+  STE[i] <- summary(a)$`coefficients`[2,2]
+  Pval[i] <-  summary(a)$`coefficients`[2,5]
+  Area[i] <- colnames(MRI_sum_baseline_dmri)[i]
+  Warn[i] <- LMEOut$warnings
+}
+#Store results in a dataframe
+Results_Comp_DMRI <- cbind.data.frame(Area[First:length(Area)], Beta[First:length(Beta)], STE[First:length(STE)], Pval[First:length(Pval)])
+#Relabel Results
+colnames(Results_Comp_DMRI) <- c("Variable", "Beta", "STE", "Pval")
+Results_Comp_DMRI$FDR1 <- p.adjust(Results_Comp_DMRI$Pval, method = "fdr")
+#non
+
+### COMBINING, FDR
+
+Results_Compulsive_Brain <- rbind(Results_Comp_SMRI, Results_Comp_RSFMRI, Results_Comp_DMRI)
+Results_Compulsive_Brain$FDR2 <- p.adjust(Results_Compulsive_Brain$Pval, method = "fdr")
+# we also did bonferroni after-the-fact
+
+fwrite(Results_Compulsive_Brain, "Compulsive_GlobalBrain_Results.txt", sep="\t")
+
+
+```
+
+#### REGIONAL BRAIN ANALYSES ####
+```{r}
+MRI_regional <- read_excel("baseline_Nicole_MRI_allvars_final.xlsx")
+MRI_regional <- MRI_regional %>%
+  select(-contains("total"), -contains("wholeb"), -contains("suprateialv"), -contains("subcorticalgv"), -contains("cbwmatter"), -contains("wmhint"), -contains("meanlh"), -contains("meanrh"), -contains("rsfmri"), -contains("dti"))
+
+brain_covar <- MRI_sum_baseline[, c(1:20, 37:41)]
+MRI_regional <- cbind(brain_covar, MRI_regional)
+MRI_regional <- MRI_regional[, -26]
+
+MRI_regional <- MRI_regional %>%
+  select(-contains(".1")) # merging led to weird variable names
+
+MRI_regional[,c(1:4,20,26)] <- lapply(MRI_regional[,c(1:4,20,26)],as.factor)
+MRI_regional[,c(5:19,21:25,27:265)] <- lapply(MRI_regional[,c(5:19,21:25,27:265)],as.numeric)
+
+MRI_regional <- MRI_regional %>%
+  mutate_if(is.numeric, scale)
+
+MRI_regional_volume <- MRI_regional %>%
+  select(-contains("area"), -contains("thick"))
+
+
+detach(MRI_sum_baseline_dmri)
+
+## Neurodevelopmental PRS & Volume - only looked at neurodev prs and volume and thickness based on global findings
+
+attach(MRI_regional_volume)
+
+First <- 25
+Last <- 127
+Beta <- NULL
+STE <- NULL
+Area <- NULL
+Pval <- NULL
+i <-  NULL
+Warn <- NULL
+Results <- NULL
+Sigs <- NULL
+LMEOut <- NULL
+a <- NULL
+#Runs the for loop
+for (i in First:Last) {
+  LMEOut <- withWarnings( a <- lmer(MRI_regional_volume[,i] ~ Neurodev_PRScs +  C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + mri_info_manufacturer_COV + smri_vol_scs_intracranialv + (1|site_id) + (1|rel_family_id)))
+  Beta[i] <- summary(a)$`coefficients`[2]
+  STE[i] <- summary(a)$`coefficients`[2,2]
+  Pval[i] <-  summary(a)$`coefficients`[2,5]
+  Area[i] <- colnames(MRI_regional_volume)[i]
+  Warn[i] <- LMEOut$warnings
+}
+#Store results in a dataframe
+Results_Neur_vol <- cbind.data.frame(Area[First:length(Area)], Beta[First:length(Beta)], STE[First:length(STE)], Pval[First:length(Pval)])
+#Relabel Results
+colnames(Results_Neur_vol) <- c("Variable", "Beta", "STE", "Pval")
+Results_Neur_vol$FDR1 <- p.adjust(Results_Neur_vol$Pval, method = "fdr")
+# smri_vol_scs_4thventricle
+
+## Neurodevelopmental PRS & Cortical Thickness
+detach(MRI_regional_volume)
+MRI_regional_thk <- MRI_regional %>%
+  select(-contains("area"), -contains("vol"))
+
+attach(MRI_regional_thk)
+
+First <- 23
+Last <- 90
+Beta <- NULL
+STE <- NULL
+Area <- NULL
+Pval <- NULL
+i <-  NULL
+Warn <- NULL
+Results <- NULL
+Sigs <- NULL
+LMEOut <- NULL
+a <- NULL
+#Runs the for loop
+for (i in First:Last) {
+  LMEOut <- withWarnings( a <- lmer(MRI_regional_thk[,i] ~ Neurodev_PRScs +  C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 + sex + interview_age + mri_info_manufacturer_COV + smri_thick_cdk_mean + (1|site_id) + (1|rel_family_id)))
+  Beta[i] <- summary(a)$`coefficients`[2]
+  STE[i] <- summary(a)$`coefficients`[2,2]
+  Pval[i] <-  summary(a)$`coefficients`[2,5]
+  Area[i] <- colnames(MRI_regional_thk)[i]
+  Warn[i] <- LMEOut$warnings
+}
+#Store results in a dataframe
+Results_Neur_thk <- cbind.data.frame(Area[First:length(Area)], Beta[First:length(Beta)], STE[First:length(STE)], Pval[First:length(Pval)])
+#Relabel Results
+colnames(Results_Neur_thk) <- c("Variable", "Beta", "STE", "Pval")
+Results_Neur_thk$FDR1 <- p.adjust(Results_Neur_thk$Pval, method = "fdr")
+
+detach(MRI_regional_thk)
+
+Results_Neur_regional <- rbind(Results_Neur_vol, Results_Neur_thk)
+fwrite(Results_Neur_regional, file = "results", sep="\t")
+```
+
